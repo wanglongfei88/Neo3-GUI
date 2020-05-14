@@ -30,4 +30,6 @@ _ReSharper*/
 .vs/
 #Nuget packages folder
 packages/
-Data_LevelDb*/
+Data_*/
+build*/
+/neo3-gui/neo3-gui/ClientApp/.vscode/settings.json

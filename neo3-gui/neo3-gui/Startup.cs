@@ -15,10 +15,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Neo.Common;
-using Neo.Invokers;
+using Neo.Models.Jobs;
 using Neo.Services;
-using WebSocketContext = System.Net.WebSockets.WebSocketContext;
-using WebSocketMiddleware = Microsoft.AspNetCore.WebSockets.WebSocketMiddleware;
+
 
 namespace Neo
 {
@@ -31,16 +30,16 @@ namespace Neo
         public Startup(IConfiguration configuration, IHostEnvironment env)
         {
             Configuration = configuration;
+
+#if DEBUG
             var root = env.ContentRootPath;
             ContentRootPath = Path.Combine(root, "ClientApp");
-            
-            CommandLineTool.Run("set BROWSER=none&&npm start", ContentRootPath, output =>
+
+            if (Directory.Exists(ContentRootPath))
             {
-                if (output.Contains("localhost:3000"))
-                {
-                    CommandLineTool.Run("electron .", ContentRootPath);
-                }
-            });
+                CommandLineTool.Run("npm run dev",ContentRootPath);
+            }
+#endif
         }
 
 
@@ -49,6 +48,7 @@ namespace Neo
         {
             services.AddWebSocketInvoker();
             services.AddSingleton<NotificationService>();
+            services.AddSingleton<JsonRpcMiddleware>();
             services.AddWebSockets(option =>
             {
 
@@ -59,12 +59,13 @@ namespace Neo
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
         {
             app.UseWebSockets();
-
+            app.UseMiddleware<JsonRpcMiddleware>();
             app.UseMiddleware<WebSocketHubMiddleware>();
 
-            app.UseNotificationService();
+            var notify = app.UseNotificationService();
+            notify.Register(new SyncHeightJob(TimeSpan.FromSeconds(5)));
+            notify.Register(new SyncWalletJob(TimeSpan.FromSeconds(10)));
 
-            
             //app.UseSpa(spa =>
             //{
             //    spa.Options.SourcePath = "ClientApp";
@@ -75,6 +76,6 @@ namespace Neo
             //    }
             //});
         }
-        
+
     }
 }
