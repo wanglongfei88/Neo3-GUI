@@ -1,6 +1,8 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using System.Threading.Tasks;
+using Akka.IO;
 using Neo.Common;
 using Neo.Common.Storage;
 using Neo.Ledger;
@@ -81,6 +83,7 @@ namespace Neo.Services.ApiServices
                 Decimals = a.Decimals,
                 Name = a.Name,
                 Symbol = a.Symbol,
+                TotalSupply = new BigInteger(a.TotalSupply),
             });
         }
 
@@ -93,9 +96,15 @@ namespace Neo.Services.ApiServices
                 Addresses = addresses,
                 Assets = assets,
             });
-            return balances.Select(b=>new AddressBalanceModel(b));
+            return balances.ToLookup(b=>b.Address).ToAddressBalanceModels();
         }
 
+
+        public async Task<object> GetSync()
+        {
+            using var db=new TrackDB();
+            return db.GetMaxSyncIndex();
+        }
 
         #region Private
 
@@ -104,12 +113,12 @@ namespace Neo.Services.ApiServices
             var model = new BlockModel(block);
             model.Confirmations = Blockchain.Singleton.Height - block.Index + 1;
 
-            if (block.Transactions.NotEmpty())
-            {
-                using var db = new TrackDB();
-                var trans = db.FindTransfer(new TrackFilter() { TxIds = block.Transactions.Select(t => t.Hash).ToList() });
-                model.Transactions = trans.List.ToTransactionPreviewModel();
-            }
+            //if (block.Transactions.NotEmpty())
+            //{
+            //    using var db = new TrackDB();
+            //    var trans = db.FindTransfer(new TrackFilter() { TxIds = block.Transactions.Select(t => t.Hash).ToList() });
+            //    model.Transactions = trans.List.ToTransactionPreviewModel();
+            //}
 
             return model;
         }

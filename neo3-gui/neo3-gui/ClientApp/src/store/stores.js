@@ -1,12 +1,21 @@
+/* eslint-disable */
 import BlockSyncStore from "./blockSyncStore";
-import WalletAddressStore from "./walletAddressStore";
+import WalletStore from "./walletStore";
+import NodeStore from "./nodeStore";
+import PathStore from "./pathStore";
+
 
 let blockSyncStore = new BlockSyncStore();
-let walletAddressStore=new WalletAddressStore();
+let walletStore = new WalletStore();
+let nodeStore=new NodeStore();
+let pathStore = new PathStore();
 
 const Stores = {
+    nodeStore,
+    walletStore,
     blockSyncStore,
-    walletAddressStore
+    pathStore
 };
 
+export { blockSyncStore, walletStore ,nodeStore,pathStore}
 export default Stores;

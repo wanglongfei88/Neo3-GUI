@@ -1,103 +1,119 @@
-/* eslint-disable */ 
+/* eslint-disable */
 import React from 'react';
+import { observer, inject } from "mobx-react";
+import { withRouter } from "react-router-dom";
 import 'antd/dist/antd.css';
-import { Redirect } from 'react-router-dom';
-import { message } from 'antd';
+import { message, Modal } from 'antd';
 import axios from 'axios';
+import Addressdetail from './addressdetail';
+import Setting from './setting';
 import {
+    ReadOutlined,
     LogoutOutlined,
-    KeyOutlined,
     SettingOutlined
-  } from '@ant-design/icons';
+} from '@ant-design/icons';
+import { withTranslation } from 'react-i18next';
+import { shell } from "electron";
 
-class menuDown extends React.Component{
-    constructor (props){
+@withTranslation()
+@inject("walletStore")
+@observer
+@withRouter
+class menuDown extends React.Component {
+    constructor(props) {
         super(props);
         this.state = {
-            showOut:false,
-            showPass:false,
-            isOut:false
+            title: "设置",
         };
     }
-    componentDidMount () {
-        this.checkWallet();
-        this.showPass();
+    componentDidMount() {
     }
-    showPass = () =>{
-        let _path = location.href.search(/wallet/g);
-        if(_path <= -1) return;
-        this.setState({showPass:true});
-    }
-    checkWallet = () =>{
-        var _this = this;
+
+    logout = () => {
+        const { t } = this.props;
         axios.post('http://localhost:8081', {
-            "id": "1",
-            "method": "ShowGas"
+            "id": "1234",
+            "method": "CloseWallet"
         })
-        .then(function (response) {
-            var _data = response.data;
-            if(_data.msgType == -1){
-                _this.setState({showOut:false})
-            }else{
-                _this.setState({showOut:true})
-            }
+        .then(() => {
+            message.success(t("wallet.close wallet success"), 2);
+            this.props.walletStore.logout();
+            this.props.history.push('/');
         })
         .catch(function (error) {
             console.log(error);
             console.log("error");
         });
     }
-    logout = () =>{
-        var _this = this;
-        axios.post('http://localhost:8081', {
-          "id": "1234",
-          "method": "CloseWallet"
-        })
-        .then(function () {
-          message.success("钱包退出成功",2);
-          _this.setState({
-            isOut:true
-          })
-        })
-        .catch(function (error) {
-          console.log(error);
-          console.log("error");
+    showModal = () => {
+        this.setState({
+            visible: true,
         });
-    }
-    render(){
-        if(this.state.isOut){
-            return (<Redirect to="/" />);
+    };
+
+    hideModal = () => {
+        this.setState({
+            visible: false,
+        });
+    };
+    getInset = (ele) => {
+        const { t } = this.props;
+        return () =>{
+            this.setState({showElem: false})
+            switch(ele){
+                case 0:this.setState({title:t("sideBar.address book"),children: <Addressdetail />});break;
+                case 1:this.setState({title:t("sideBar.settings"),children: <Setting />});break;
+                default:this.setState({title:t("sideBar.settings"),children: <Setting />});break;
+            }
+            this.setState({
+                visible: true,
+            });
         }
+    }
+    openUrl(url) {
+        return () => {
+            shell.openExternal(url);
+        }
+    }
+    render() {
+        const walletOpen = this.props.walletStore.isOpen;
+        const { t } = this.props;
         return (
             <div className="menu-down">
                 <ul>
-                    {this.props.isl === true?this.state.showOut=true:null}
-                    {this.state.showOut?(
+                    {walletOpen ? (
+                    <li>
+                        <a onClick={this.getInset(0)}>
+                            <ReadOutlined />
+                            <span>{t("sideBar.address book")}</span>
+                        </a>
+                    </li>):null}
+                    {walletOpen ? (
                     <li>
                         <a onClick={this.logout}>
-                        <LogoutOutlined />
-                        <span>登出钱包</span>
+                            <LogoutOutlined />
+                            <span>{t("sideBar.logout")}</span>
                         </a>
-                    </li>
-                    ):null}
-                    {/* {this.state.showOut&&this.state.showPass?(
+                    </li>) : null}
                     <li>
-                        <a>
-                        <KeyOutlined />
-                        <span>修改密码</span>
-                        </a>
-                    </li>
-                    ):null} */}
-                    <li>
-                        <a>
-                        <SettingOutlined />
-                        <span>设置</span>
+                        <a onClick={this.getInset(1)}>
+                            <SettingOutlined />
+                            <span>{t("sideBar.settings")}</span>
                         </a>
                     </li>
                 </ul>
+                <Modal
+                    className="set-modal"
+                    title={this.state.title}
+                    visible={this.state.visible}
+                    onCancel={this.hideModal}
+                    footer={null}
+                >
+                    {this.state.children}
+                </Modal>
             </div>
         )
     }
-} 
+}
 
 export default menuDown;

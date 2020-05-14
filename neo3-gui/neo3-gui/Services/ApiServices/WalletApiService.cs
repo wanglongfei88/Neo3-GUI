@@ -9,6 +9,7 @@ using Akka.Actor;
 using Neo.Common;
 using Neo.Common.Storage;
 using Neo.Common.Utility;
+using Neo.IO.Json;
 using Neo.Ledger;
 using Neo.Models;
 using Neo.Models.Transactions;
@@ -67,7 +68,7 @@ namespace Neo.Services.ApiServices
         /// <returns></returns>
         public async Task<bool> CloseWallet()
         {
-            Program.Starter.CloseWallet();
+            Program.Starter.OnCloseWalletCommand(null);
             return true;
         }
 
@@ -91,7 +92,7 @@ namespace Neo.Services.ApiServices
                     case ".db3":
                         {
                             UserWallet wallet = UserWallet.Create(path, password);
-                            var account = hexPrivateKey.NotNull() ? wallet.CreateAccount(hexPrivateKey.HexToBytes()) : wallet.CreateAccount();
+                            var account = hexPrivateKey.NotEmpty() ? wallet.CreateAccount(hexPrivateKey) : wallet.CreateAccount();
                             result.Accounts.Add(new AccountModel()
                             {
                                 AccountType = AccountType.Standard,
@@ -99,13 +100,14 @@ namespace Neo.Services.ApiServices
                                 ScriptHash = account.ScriptHash,
 
                             });
+                            Program.Starter.CurrentWallet = wallet;
                         }
                         break;
                     case ".json":
                         {
                             NEP6Wallet wallet = new NEP6Wallet(path);
                             wallet.Unlock(password);
-                            var account = hexPrivateKey.NotNull() ? wallet.CreateAccount(hexPrivateKey.HexToBytes()) : wallet.CreateAccount();
+                            var account = hexPrivateKey.NotEmpty() ? wallet.CreateAccount(hexPrivateKey) : wallet.CreateAccount();
                             wallet.Save();
                             result.Accounts.Add(new AccountModel()
                             {
@@ -113,6 +115,7 @@ namespace Neo.Services.ApiServices
                                 ScriptHash = account.ScriptHash,
                                 Address = account.Address,
                             });
+                            Program.Starter.CurrentWallet = wallet;
                         }
                         break;
                     default:
@@ -265,6 +268,25 @@ namespace Neo.Services.ApiServices
             });
         }
 
+
+        /// <summary>
+        /// list current wallet candidate address(only single sign address)
+        /// </summary>
+        /// <returns></returns>
+        public async Task<object> ListCandidatePublicKey(int count = 100)
+        {
+            if (CurrentWallet == null)
+            {
+                return Error(ErrorCode.WalletNotOpen);
+            }
+            var accounts = CurrentWallet.GetAccounts().Where(a => !a.WatchOnly && a.Contract.Script.IsSignatureContract()).Take(count).ToList();
+            return accounts.Select(a => new PublicKeyModel
+            {
+                Address = a.Address,
+                PublicKey = a.GetKey().PublicKey.EncodePoint(true),
+            });
+        }
+
         /// <summary>
         /// import watch only addresses
         /// </summary>
@@ -295,28 +317,31 @@ namespace Neo.Services.ApiServices
         }
 
         /// <summary>
-        /// import wif private keys
+        /// import wif or hex private keys
         /// </summary>
-        /// <param name="wifs"></param>
+        /// <param name="keys"></param>
         /// <returns></returns>
-        public async Task<object> ImportWif(string[] wifs)
+        public async Task<object> ImportAccounts(string[] keys)
         {
             if (CurrentWallet == null)
             {
                 return Error(ErrorCode.WalletNotOpen);
             }
-            foreach (var wif in wifs)
+
+            var importKeys = new List<byte[]>();
+            foreach (var key in keys)
             {
-                var priKey = wif.TryGetPrivateKey();
-                if (priKey.IsNull())
+                var priKey = key.TryGetPrivateKey();
+                if (priKey.IsEmpty())
                 {
                     return Error(ErrorCode.InvalidPrivateKey);
                 }
+                importKeys.Add(priKey);
             }
             var importedAccounts = new List<AccountModel>();
-            foreach (var wif in wifs)
+            foreach (var privateKey in importKeys)
             {
-                var account = CurrentWallet.Import(wif);
+                var account = CurrentWallet.CreateAccount(privateKey);
                 importedAccounts.Add(new AccountModel
                 {
                     Address = account.Address,
@@ -409,15 +434,12 @@ namespace Neo.Services.ApiServices
                 {
                     return Error(ErrorCode.ClaimGasFail);
                 }
-                ContractParametersContext context = new ContractParametersContext(tx);
-                CurrentWallet.Sign(context);
-                if (!context.Completed)
+                var (signSuccess, context) = CurrentWallet.TrySignTx(tx);
+                if (!signSuccess)
                 {
-                    return Error(ErrorCode.SignFail, $"SignatureContext:{context}");
+                    return Error(ErrorCode.SignFail, context.SafeSerialize());
                 }
-                tx.Witnesses = context.GetWitnesses();
-                Program.Starter.NeoSystem.LocalNode.Tell(new LocalNode.Relay { Inventory = tx });
-                var task = Task.Run(() => UnconfirmedTransactionCache.AddTransaction(tx));
+                await tx.Broadcast();
                 return new TransactionModel(tx);
             }
             catch (Exception ex)
@@ -496,17 +518,13 @@ namespace Neo.Services.ApiServices
                     return Error(ErrorCode.BalanceNotEnough, "Insufficient funds");
                 }
 
-                ContractParametersContext context = new ContractParametersContext(tx);
-                CurrentWallet.Sign(context);
-                if (!context.Completed)
+                var (signSuccess, context) = CurrentWallet.TrySignTx(tx);
+                if (!signSuccess)
                 {
-                    return Error(ErrorCode.SignFail, $"SignatureContext:{context}");
+                    return Error(ErrorCode.SignFail, context.SafeSerialize());
                 }
-                tx.Witnesses = context.GetWitnesses();
-                Program.Starter.NeoSystem.LocalNode.Tell(new LocalNode.Relay { Inventory = tx });
-                var task = Task.Run(() => UnconfirmedTransactionCache.AddTransaction(tx));
+                await tx.Broadcast();
                 return new TransactionModel(tx);
-
             }
             catch (Exception ex)
             {
@@ -580,15 +598,12 @@ namespace Neo.Services.ApiServices
                     return Error(ErrorCode.BalanceNotEnough, "Insufficient funds");
                 }
 
-                ContractParametersContext context = new ContractParametersContext(tx);
-                CurrentWallet.Sign(context);
-                if (!context.Completed)
+                var (signSuccess, context) = CurrentWallet.TrySignTx(tx);
+                if (!signSuccess)
                 {
-                    return Error(ErrorCode.SignFail, $"SignatureContext:{context}");
+                    return Error(ErrorCode.SignFail, context.SafeSerialize());
                 }
-                tx.Witnesses = context.GetWitnesses();
-                Program.Starter.NeoSystem.LocalNode.Tell(new LocalNode.Relay { Inventory = tx });
-                var task = Task.Run(() => UnconfirmedTransactionCache.AddTransaction(tx));
+                await tx.Broadcast();
                 return new TransactionModel(tx);
             }
             catch (Exception ex)
@@ -603,10 +618,39 @@ namespace Neo.Services.ApiServices
 
 
         /// <summary>
-        /// get my unconfirmed transactions
+        /// append signature for multi address tx
+        /// </summary>
+        /// <param name="signContext"></param>
+        /// <returns></returns>
+        public async Task<object> AppendSignature(string signContext)
+        {
+            if (CurrentWallet == null)
+            {
+                return Error(ErrorCode.WalletNotOpen);
+            }
+
+            ContractParametersContext context;
+            try
+            {
+                context = ContractParametersContext.FromJson(signContext.DeserializeJson<JObject>());
+            }
+            catch (Exception e)
+            {
+                return Error(ErrorCode.InvalidPara);
+            }
+
+            if (CurrentWallet.SignContext(context))
+            {
+                return context.SafeSerialize();
+            }
+            return Error(ErrorCode.SignFail, context.SafeSerialize());
+        }
+
+        /// <summary>
+        /// get my wallet unconfirmed transactions
         /// </summary>
         /// <returns></returns>
-        public async Task<object> GetMyUnconfirmedTransactions()
+        public async Task<object> GetMyUnconfirmedTransactions(int pageIndex = 1, int limit = 100)
         {
             if (CurrentWallet == null)
             {
@@ -614,15 +658,20 @@ namespace Neo.Services.ApiServices
             }
 
             var addresses = CurrentWallet.GetAccounts().Select(a => a.ScriptHash).ToList();
-            var tempTransactions = UnconfirmedTransactionCache.GetUnconfirmedTransactions(addresses);
-            return tempTransactions.Select(t => t.ToTransactionPreviewModel());
+            if (addresses.IsEmpty())
+            {
+                return new PageList<TransactionPreviewModel>();
+            }
+            var tempTransactions = UnconfirmedTransactionCache.GetUnconfirmedTransactions(addresses, pageIndex, limit);
+            var result = tempTransactions.Project(t => t.ToTransactionPreviewModel());
+            return result;
         }
 
         /// <summary>
         /// query relate my wallet transactions(on chain)
         /// </summary>
         /// <returns></returns>
-        public async Task<object> GetMyTransactions(int limit = 100, UInt160 address = null)
+        public async Task<object> GetMyTransactions(int pageIndex = 1, int limit = 100, UInt160 address = null)
         {
             if (CurrentWallet == null)
             {
@@ -630,9 +679,20 @@ namespace Neo.Services.ApiServices
             }
 
             var addresses = address != null ? new List<UInt160>() { address } : CurrentWallet.GetAccounts().Select(a => a.ScriptHash).ToList();
+            if (addresses.IsEmpty())
+            {
+                return new PageList<TransactionPreviewModel>();
+            }
             using var db = new TrackDB();
-            var trans = db.FindTransactions(new TrackFilter() { FromOrTo = addresses, PageIndex = 1, PageSize = limit }).List;
-            return trans.ToTransactionPreviewModel();
+            var trans = db.FindNep5Transactions(new TransferFilter() { FromOrTo = addresses, PageIndex = pageIndex, PageSize = limit });
+            var result = new PageList<TransactionPreviewModel>
+            {
+                TotalCount = trans.TotalCount,
+                PageSize = trans.PageSize,
+                PageIndex = pageIndex,
+                List = trans.List?.ToTransactionPreviewModel(),
+            };
+            return result;
         }
 
         /// <summary>
@@ -656,11 +716,22 @@ namespace Neo.Services.ApiServices
                 addresses = new List<UInt160>() { address };
             }
 
+            if (addresses.IsEmpty())
+            {
+                return new List<AddressBalanceModel>();
+            }
             using var db = new TrackDB();
             var balances = db.FindAssetBalance(new BalanceFilter() { Addresses = addresses, Assets = assets });
 
-            return balances.OrderByDescending(b => b.Balance).Select(b => new AddressBalanceModel(b));
+            var result = balances.ToLookup(b => b.Address).ToAddressBalanceModels();
+            if (assets.IsEmpty())
+            {
+                AppendDefaultNeoAndGas(result, addresses);
+            }
+            return result;
         }
+
+
 
         /// <summary>
         /// query relate my wallet balances
@@ -674,40 +745,104 @@ namespace Neo.Services.ApiServices
             }
 
             var addresses = CurrentWallet.GetAccounts().Select(a => a.ScriptHash).ToList();
-
+            if (addresses.IsEmpty())
+            {
+                return new List<AddressBalanceModel>();
+            }
             using var db = new TrackDB();
             var balances = db.FindAssetBalance(new BalanceFilter() { Addresses = addresses, Assets = assets });
 
-            return balances.GroupBy(b => new { b.Asset, b.AssetDecimals, b.AssetSymbol }).Select(g => new AssetBalanceModel
+            var result = balances.GroupBy(b => new { b.Asset, b.AssetDecimals, b.AssetSymbol }).Select(g => new AssetBalanceModel
             {
                 Asset = g.Key.Asset,
                 Symbol = g.Key.AssetSymbol,
                 Balance = new BigDecimal(g.Select(b => b.Balance).Sum(), g.Key.AssetDecimals)
-            });
+            }).ToList();
+            if (assets.IsEmpty())
+            {
+                AppendDefaultNeoAndGas(result);
+            }
+            return result;
         }
-
 
 
 
         #region Private
 
-        //private List<TransactionPreviewModel> ConvertToTransactionPreviewModel(IEnumerable<TransferInfo> trans)
-        //{
-        //    return trans.ToLookup(x => x.TxId).Select(ToTransactionPreviewModel).ToList();
-        //}
 
-        //private TransactionPreviewModel ToTransactionPreviewModel(IGrouping<UInt256, TransferInfo> lookup)
-        //{
-        //    var item = lookup.FirstOrDefault();
-        //    var model = new TransactionPreviewModel()
-        //    {
-        //        TxId = lookup.Key,
-        //        Timestamp = item.TimeStamp,
-        //        BlockHeight = item.BlockHeight,
-        //        Transfers = lookup.Select(x => x.ToTransferModel()).ToList(),
-        //    };
-        //    return model;
-        //}
+        /// <summary>
+        /// add neo or gas balance if not found
+        /// </summary>
+        /// <param name="list"></param>
+        private void AppendDefaultNeoAndGas(IList<AssetBalanceModel> list)
+        {
+            bool hasNeo = false;
+            bool hasGas = false;
+            foreach (var assetBalanceModel in list)
+            {
+                hasNeo ^= assetBalanceModel.Asset == NativeContract.NEO.Hash;
+                hasGas ^= assetBalanceModel.Asset == NativeContract.GAS.Hash;
+                if (hasNeo && hasGas)
+                {
+                    break;
+                }
+            }
+
+            if (!hasGas)
+            {
+                list.Insert(0, _defaultGasBalance);
+            }
+
+            if (!hasNeo)
+            {
+                list.Insert(0, _defaultNeoBalance);
+            }
+        }
+
+
+        /// <summary>
+        /// add neo or gas balance if not found
+        /// </summary>
+        /// <param name="list"></param>
+        private void AppendDefaultNeoAndGas(List<AddressBalanceModel> list, List<UInt160> addresses)
+        {
+            var lookup = list.ToLookup(l => l.AddressHash);
+            var unfoundAddreses = addresses.Except(lookup.Select(l => l.Key)).ToList();
+            foreach (var address in unfoundAddreses)
+            {
+                list.Add(new AddressBalanceModel()
+                {
+                    AddressHash = address,
+                    Balances = new List<AssetBalanceModel>() { _defaultNeoBalance, _defaultGasBalance }
+                });
+            }
+            foreach (var addressBalanceModel in list)
+            {
+                if (addressBalanceModel.Balances.All(b => b.Asset != NativeContract.NEO.Hash))
+                {
+                    addressBalanceModel.Balances.Add(_defaultNeoBalance);
+                }
+                if (addressBalanceModel.Balances.All(b => b.Asset != NativeContract.GAS.Hash))
+                {
+                    addressBalanceModel.Balances.Add(_defaultGasBalance);
+                }
+            }
+        }
+
+        private AssetBalanceModel _defaultNeoBalance = new AssetBalanceModel()
+        {
+            Asset = NativeContract.NEO.Hash,
+            Symbol = NativeContract.NEO.Symbol,
+            Balance = new BigInteger(0).ToNeo()
+        };
+
+        private AssetBalanceModel _defaultGasBalance = new AssetBalanceModel()
+        {
+            Asset = NativeContract.GAS.Hash,
+            Symbol = NativeContract.GAS.Symbol,
+            Balance = new BigInteger(0).ToGas()
+        };
+
 
 
         /// <summary>
