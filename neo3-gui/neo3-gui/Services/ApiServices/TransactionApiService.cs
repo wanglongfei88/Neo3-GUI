@@ -2,6 +2,7 @@
 using System.Linq;
 using System.Threading.Tasks;
 using Neo.Common;
+using Neo.Common.Consoles;
 using Neo.Common.Storage;
 using Neo.Common.Storage.LevelDBModules;
 using Neo.Common.Utility;
@@ -11,6 +12,7 @@ using Neo.Ledger;
 using Neo.Models;
 using Neo.Models.Transactions;
 using Neo.Network.P2P.Payloads;
+using Neo.SmartContract.Native;
 
 namespace Neo.Services.ApiServices
 {
@@ -25,7 +27,8 @@ namespace Neo.Services.ApiServices
         /// <returns></returns>
         public async Task<object> GetTransaction(UInt256 txId)
         {
-            var transaction = Blockchain.Singleton.GetTransaction(txId);
+            var snapshot = Helpers.GetDefaultSnapshot();
+            var transaction = snapshot.GetTransaction(txId);
             if (transaction == null)
             {
                 return Error(ErrorCode.TxIdNotFound);
@@ -33,14 +36,14 @@ namespace Neo.Services.ApiServices
 
             var model = new TransactionModel(transaction);
 
-            TransactionState txState = Blockchain.Singleton.View.Transactions.TryGet(txId);
+            var txState = snapshot.GetTransactionState(txId);
             if (txState != null)
             {
-                Header header = Blockchain.Singleton.GetHeader(txState.BlockIndex);
+                Header header = snapshot.GetHeader(txState.BlockIndex);
                 model.BlockHash = header.Hash;
                 model.BlockHeight = txState.BlockIndex;
                 model.Timestamp = header.Timestamp;
-                model.Confirmations = Blockchain.Singleton.Height - header.Index + 1;
+                model.Confirmations = snapshot.GetHeight() - header.Index + 1;
             }
             using var db = new TrackDB();
             var trans = db.QueryTransfers(new TransferFilter() { TxIds = new List<UInt256>() { txId }, PageSize = int.MaxValue }).List;
@@ -71,22 +74,25 @@ namespace Neo.Services.ApiServices
         /// <returns></returns>
         public async Task<object> GetRawTransaction(UInt256 txId, bool showJson = false)
         {
-            var transaction = Blockchain.Singleton.GetTransaction(txId);
+            var snapshot = Helpers.GetDefaultSnapshot();
+            var transaction = snapshot.GetTransaction(txId);
             if (transaction == null)
             {
                 return Error(ErrorCode.TxIdNotFound);
             }
             if (showJson)
             {
-                JObject json = transaction.ToJson();
-                TransactionState txState = Blockchain.Singleton.View.Transactions.TryGet(txId);
+                JObject json = transaction.ToJson(CliSettings.Default.Protocol);
+                TransactionState txState = snapshot.GetTransactionState(txId);
                 if (txState != null)
                 {
-                    Header header = Blockchain.Singleton.GetHeader(txState.BlockIndex);
+                    Header header = snapshot.GetHeader(txState.BlockIndex);
                     json["blockhash"] = header.Hash.ToString();
-                    json["confirmations"] = Blockchain.Singleton.Height - header.Index + 1;
+                    json["confirmations"] = snapshot.GetHeight() - header.Index + 1;
                     json["blocktime"] = header.Timestamp;
-                    json["vm_state"] = txState.VMState;
+                    using var db = new TrackDB();
+                    var executelog = db.GetExecuteLog(txId);
+                    json["vm_state"] = executelog?.VMState;
                 }
                 return json.ToString();
             }
@@ -96,7 +102,7 @@ namespace Neo.Services.ApiServices
 
         public async Task<object> GetUnconfirmedTransaction(UInt256 txId)
         {
-            var transaction = Blockchain.Singleton.GetTransaction(txId);
+            var transaction = Helpers.GetDefaultSnapshot().GetTransaction(txId);
             if (transaction == null)
             {
                 return Error(ErrorCode.TxIdNotFound);

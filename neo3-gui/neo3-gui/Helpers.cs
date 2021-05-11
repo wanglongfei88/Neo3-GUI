@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Net.WebSockets;
@@ -14,8 +15,10 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Neo.Common;
+using Neo.Common.Consoles;
 using Neo.Common.Json;
 using Neo.Common.Storage;
 using Neo.Common.Utility;
@@ -31,6 +34,7 @@ using Neo.Network.P2P.Payloads;
 using Neo.Persistence;
 using Neo.Services;
 using Neo.SmartContract;
+using Neo.SmartContract.Manifest;
 using Neo.SmartContract.Native;
 using Neo.VM;
 using Neo.VM.Types;
@@ -64,6 +68,185 @@ namespace Neo
         };
 
 
+
+
+        private static byte UTF8CharacterMask1Byte = 0b1000_0000;
+        private static byte Valid1Byte = 0b0000_0000;//0b0xxx_xxxx
+
+        private static byte UTF8CharacterMask2Byte = 0b1110_0000;
+        private static byte Valid2Byte = 0b1100_0000;//0b110x_xxxx
+
+        private static byte UTF8CharacterMask3Byte = 0b1111_0000;
+        private static byte Valid3Byte = 0b1110_0000;//0b1110_xxxx
+
+        private static byte UTF8CharacterMask4Byte = 0b1111_1000;
+        private static byte Valid4Byte = 0b1111_0000;//0b1111_0xxx
+
+        private static byte UTF8CharacterMaskForExtraByte = 0b1100_0000;
+        private static byte ValidExtraByte = 0b1000_0000;//0b10xx_xxxx
+
+
+        public static bool IsValidUTF8ByteArray(this byte[] bytes)
+        {
+            short extraByteCount = 0;
+
+            foreach (byte bt in bytes)
+            {
+
+                if (extraByteCount > 0)
+                {
+                    extraByteCount--;
+
+                    // Extra Byte Pattern.
+                    if ((bt & UTF8CharacterMaskForExtraByte) != ValidExtraByte)
+                        return false;
+                    continue;
+                }
+                else
+                {
+                    // 1 Byte Pattern.
+                    if ((bt & UTF8CharacterMask1Byte) == Valid1Byte)
+                    {
+                        continue;
+                    }
+
+                    // 2 Bytes Pattern.
+                    if ((bt & UTF8CharacterMask2Byte) == Valid2Byte)
+                    {
+                        extraByteCount = 1;
+                        continue;
+                    }
+
+                    // 3 Bytes Pattern.
+                    if ((bt & UTF8CharacterMask3Byte) == Valid3Byte)
+                    {
+                        extraByteCount = 2;
+                        continue;
+                    }
+
+                    // 4 Bytes Pattern.
+                    if ((bt & UTF8CharacterMask4Byte) == Valid4Byte)
+                    {
+                        extraByteCount = 3;
+                        continue;
+                    }
+
+                    // invalid UTF8-Bytes.
+                    return false;
+                }
+            }
+
+            return extraByteCount == 0;
+        }
+
+
+
+
+        /// <summary>
+        /// do not close this snapshot!
+        /// </summary>
+        /// <returns></returns>
+        public static DataCache GetDefaultSnapshot()
+        {
+            //while (Program.Starter.NeoSystem==null)
+            //{
+            //}
+            return Program.Starter.NeoSystem.StoreView;
+        }
+
+        /// <summary>
+        /// do not close this snapshot!
+        /// </summary>
+        /// <param name="x"></param>
+        /// <returns></returns>
+        public static DataCache GetDefaultSnapshot(this object x)
+        {
+            return Program.Starter.NeoSystem.StoreView;
+        }
+
+
+        /// <summary>
+        /// get current height via default block chain instance
+        /// </summary>
+        /// <param name="obj"></param>
+        /// <returns></returns>
+        public static LocalNode GetDefaultLocalNode(this object obj)
+        {
+            return Program.Starter.LocalNode; ;
+        }
+
+
+        public static readonly Dictionary<string, ContractEventDescriptor> EventMetaCache = new Dictionary<string, ContractEventDescriptor>();
+        public static ContractEventDescriptor GetEvent(this UInt160 contractHash, string eventName)
+        {
+            var cachekey = contractHash + eventName;
+            if (EventMetaCache.ContainsKey(cachekey))
+            {
+                return EventMetaCache[cachekey];
+            }
+            var contract = GetDefaultSnapshot().GetContract(contractHash);
+            var eventMeta = contract?.Manifest.Abi.Events.FirstOrDefault(e => e.Name == eventName);
+            if (eventMeta == null)
+            {
+                return null;
+            }
+
+            EventMetaCache[cachekey] = eventMeta;
+            return eventMeta;
+        }
+
+        /// <summary>
+        /// Load configuration with different Environment Variable
+        /// </summary>
+        /// <param name="configFileName">Configuration</param>
+        /// <returns>IConfigurationRoot</returns>
+        public static string GetEnvConfigPath(this string configFileName)
+        {
+            var env = Environment.GetEnvironmentVariable("NEO_NETWORK");
+            var configFile = string.IsNullOrWhiteSpace(env) ? $"{configFileName}.json" : $"{configFileName}.{env}.json";
+            return configFile;
+        }
+
+        /// <summary>
+        /// Load configuration with different Environment Variable
+        /// </summary>
+        /// <param name="config">Configuration</param>
+        /// <returns>IConfigurationRoot</returns>
+        public static IConfigurationRoot LoadConfig(this string config)
+        {
+            var configFile = config.GetEnvConfigPath();
+            // Working directory
+            var file = Path.Combine(Environment.CurrentDirectory, configFile);
+            if (!File.Exists(file))
+            {
+                // EntryPoint folder
+                file = Path.Combine(Path.GetDirectoryName(Assembly.GetEntryAssembly().Location), configFile);
+                if (!File.Exists(file))
+                {
+                    // neo.dll folder
+                    file = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), configFile);
+                    if (!File.Exists(file))
+                    {
+                        // default config
+                        return new ConfigurationBuilder().Build();
+                    }
+                }
+            }
+            return new ConfigurationBuilder()
+                .AddJsonFile(file, true)
+                .Build();
+        }
+
+
+        public static string ToAddress(this UInt160 scriptHash)
+        {
+            return scriptHash.ToAddress(CliSettings.Default.Protocol.AddressVersion);
+        }
+
+        public static UInt160 ToScriptHash(this string address)
+        {
+            return address.ToScriptHash(CliSettings.Default.Protocol.AddressVersion);
+        }
 
         public static string GetVersion(this Assembly assembly)
         {
@@ -122,10 +305,10 @@ namespace Neo
         /// <param name="script"></param>
         /// <param name="signers"></param>
         /// <returns></returns>
-        public static Transaction InitTransaction(this Wallet wallet, byte[] script, params UInt160[] signers)
+        public static Transaction InitTransaction(this Wallet wallet, byte[] script, UInt160 sender = null, params UInt160[] signers)
         {
             var cosigners = signers.Select(account => new Signer { Account = account, Scopes = WitnessScope.Global }).ToArray();
-            return InitTransaction(wallet, script, cosigners);
+            return InitTransaction(wallet, script, sender, cosigners);
         }
 
         /// <summary>
@@ -133,11 +316,12 @@ namespace Neo
         /// </summary>
         /// <param name="wallet"></param>
         /// <param name="script"></param>
+        /// <param name="sender"></param>
         /// <param name="signers"></param>
         /// <returns></returns>
-        public static Transaction InitTransaction(this Wallet wallet, byte[] script, params Signer[] signers)
+        public static Transaction InitTransaction(this Wallet wallet, byte[] script, UInt160 sender = null, params Signer[] signers)
         {
-            var tx = wallet.MakeTransaction(script, null, signers);
+            var tx = wallet.MakeTransaction(GetDefaultSnapshot(), script, sender, signers, maxGas: 2000_00000000);
             return tx;
         }
 
@@ -162,7 +346,7 @@ namespace Neo
         /// <returns></returns>
         public static (bool, ContractParametersContext) TrySignTx(this Wallet wallet, Transaction tx)
         {
-            var context = new ContractParametersContext(tx);
+            var context = new ContractParametersContext(GetDefaultSnapshot(), tx, CliSettings.Default.Protocol.Network);
             var signResult = wallet.SignContext(context);
             if (signResult)
             {
@@ -416,7 +600,7 @@ namespace Neo
         /// <param name="account"></param>
         /// <param name="snapshot"></param>
         /// <returns></returns>
-        public static AccountType GetAccountType(this WalletAccount account, SnapshotView snapshot)
+        public static AccountType GetAccountType(this WalletAccount account, DataCache snapshot)
         {
             if (account.Contract != null)
             {
@@ -443,7 +627,7 @@ namespace Neo
         /// <param name="asset"></param>
         /// <param name="snapshot"></param>
         /// <returns></returns>
-        public static List<BigDecimal> GetNativeBalanceOf<T>(this IEnumerable<UInt160> addresses, Nep17Token<T> asset, StoreView snapshot) where T : AccountState, new()
+        public static List<BigDecimal> GetNativeBalanceOf<T>(this IEnumerable<UInt160> addresses, FungibleToken<T> asset, DataCache snapshot) where T : AccountState, new()
         {
             var balances = new List<BigDecimal>();
             foreach (var account in addresses)
@@ -462,8 +646,8 @@ namespace Neo
         /// <returns></returns>
         public static List<BigDecimal> GetBalanceOf(this IEnumerable<UInt160> addresses, UInt160 assetId)
         {
-            using var snapshot = Blockchain.Singleton.GetSnapshot();
-            return GetBalanceOf(addresses, assetId, snapshot);
+            //using var snapshot = Blockchain..Singleton.GetSnapshot();
+            return GetBalanceOf(addresses, assetId, GetDefaultSnapshot());
         }
 
 
@@ -475,7 +659,7 @@ namespace Neo
         /// <param name="assetId"></param>
         /// <param name="snapshot"></param>
         /// <returns></returns>
-        public static List<BigDecimal> GetBalanceOf(this IEnumerable<UInt160> addresses, UInt160 assetId, SnapshotView snapshot)
+        public static List<BigDecimal> GetBalanceOf(this IEnumerable<UInt160> addresses, UInt160 assetId, DataCache snapshot)
         {
             var assetInfo = AssetCache.GetAssetInfo(assetId, snapshot);
             if (assetInfo == null)
@@ -494,7 +678,7 @@ namespace Neo
             using var sb = new ScriptBuilder();
             foreach (var address in addresses)
             {
-                sb.EmitAppCall(assetId, "balanceOf", address);
+                sb.EmitDynamicCall(assetId, "balanceOf", address);
             }
 
             using ApplicationEngine engine = sb.ToArray().RunTestMode(snapshot);
@@ -515,8 +699,8 @@ namespace Neo
         /// <returns></returns>
         public static BigDecimal GetBalanceOf(this UInt160 address, UInt160 assetId)
         {
-            using var snapshot = Blockchain.Singleton.GetSnapshot();
-            return GetBalanceOf(address, assetId, snapshot);
+            //using var snapshot = Blockchai.Singleton.GetSnapshot();
+            return GetBalanceOf(address, assetId, GetDefaultSnapshot());
         }
 
         /// <summary>
@@ -526,20 +710,20 @@ namespace Neo
         /// <param name="assetId"></param>
         /// <param name="snapshot"></param>
         /// <returns></returns>
-        public static BigDecimal GetBalanceOf(this UInt160 address, UInt160 assetId, StoreView snapshot)
+        public static BigDecimal GetBalanceOf(this UInt160 address, UInt160 assetId, DataCache snapshot)
         {
             var assetInfo = AssetCache.GetAssetInfo(assetId, snapshot);
             if (assetInfo == null)
             {
-                return new BigDecimal(0, 0);
+                return new BigDecimal(BigInteger.Zero, 0);
             }
 
             using var sb = new ScriptBuilder();
-            sb.EmitAppCall(assetId, "balanceOf", address);
+            sb.EmitDynamicCall(assetId, "balanceOf", address);
             using var engine = sb.ToArray().RunTestMode(snapshot);
             if (engine.State.HasFlag(VMState.FAULT))
             {
-                return new BigDecimal(0, 0);
+                return new BigDecimal(BigInteger.Zero, 0);
             }
             var balances = engine.ResultStack.Pop().GetInteger();
             return new BigDecimal(balances, assetInfo.Decimals);
@@ -576,7 +760,7 @@ namespace Neo
             var asset = AssetCache.GetAssetInfo(assetId);
             if (asset == null)
             {
-                return (new BigDecimal(0, 0), null);
+                return (new BigDecimal(BigInteger.Zero, 0), null);
             }
 
             return (new BigDecimal(amount, asset.Decimals), asset);
@@ -926,13 +1110,9 @@ namespace Neo
         }
 
 
-        public static VerificationContract ToVerificationContract(this ECPoint point)
+        public static Contract ToVerificationContract(this ECPoint point)
         {
-            VerificationContract contract = new VerificationContract
-            {
-                Script = SmartContract.Contract.CreateSignatureRedeemScript(point),
-                ParameterList = new[] { ContractParameterType.Signature }
-            };
+            var contract = Contract.CreateSignatureContract(point);
             return contract;
         }
 
@@ -966,8 +1146,6 @@ namespace Neo
             return data.ToArray();
         }
 
-
-
         public static NotificationInfo ToNotificationInfo(this NotifyEventArgs notify)
         {
             var notification = new NotificationInfo();
@@ -977,18 +1155,117 @@ namespace Neo
             return notification;
         }
 
-
-        public static ApplicationEngine RunTestMode(this byte[] script, StoreView snapshot, IVerifiable container = null)
+        public static ApplicationEngine RunTestMode(this byte[] script, DataCache snapshot, IVerifiable container = null)
         {
-            return ApplicationEngine.Run(script, snapshot, container, gas: Constant.TestMode);
+            return ApplicationEngine.Run(script, snapshot ?? GetDefaultSnapshot(), container, settings: CliSettings.Default.Protocol, gas: Constant.TestMode);
+        }
+
+        public static ContractState GetContract(this DataCache snapshot, UInt160 hash)
+        {
+            return NativeContract.ContractManagement.GetContract(snapshot, hash);
         }
 
 
-        public static ContractState GetContract(this StoreView snapshot, UInt160 hash)
+        /// <summary>
+        /// get current height via default block chain instance
+        /// </summary>
+        /// <returns></returns>
+        public static uint GetCurrentHeight()
         {
-            return NativeContract.Management.GetContract(snapshot, hash);
+            return GetDefaultSnapshot().GetHeight();
         }
 
+        /// <summary>
+        /// get current height via default block chain instance
+        /// </summary>
+        /// <param name="obj"></param>
+        /// <returns></returns>
+        public static uint GetCurrentHeight(this object obj)
+        {
+            return GetCurrentHeight();
+        }
+
+        /// <summary>
+        /// get current height via default block chain instance
+        /// </summary>
+        /// <param name="obj"></param>
+        /// <returns></returns>
+        public static uint GetCurrentHeaderHeight(this object obj)
+        {
+            return Program.Starter.NeoSystem.HeaderCache.Last?.Index ?? GetCurrentHeight();
+        }
+
+
+        public static uint GetHeight(this DataCache snapshot)
+        {
+            return NativeContract.Ledger.CurrentIndex(snapshot);
+        }
+
+        public static Header GetCurrentHeader(this DataCache snapshot)
+        {
+            return NativeContract.Ledger.GetHeader(snapshot, snapshot.GetHeight());
+        }
+
+        /// <summary>
+        /// get block via default block chain instance
+        /// </summary>
+        /// <param name="index"></param>
+        /// <returns></returns>
+        public static Block GetBlock(this uint index)
+        {
+            return NativeContract.Ledger.GetBlock(GetDefaultSnapshot(), index);
+        }
+
+        /// <summary>
+        /// get block via default block chain instance
+        /// </summary>
+        /// <param name="hash"></param>
+        /// <returns></returns>
+        public static Block GetBlock(this UInt256 hash)
+        {
+            return NativeContract.Ledger.GetBlock(GetDefaultSnapshot(), hash);
+        }
+
+
+        /// <summary>
+        /// get Contract via default block chain instance
+        /// </summary>
+        /// <param name="hash"></param>
+        /// <returns></returns>
+        public static ContractState GetContract(this UInt160 hash)
+        {
+            return GetDefaultSnapshot().GetContract(hash);
+        }
+
+        public static Block GetBlock(this DataCache snapshot, uint index)
+        {
+            return NativeContract.Ledger.GetBlock(snapshot, index);
+        }
+
+        public static Header GetHeader(this DataCache snapshot, uint index)
+        {
+            return NativeContract.Ledger.GetHeader(snapshot, index);
+        }
+
+        public static Header GetHeader(this DataCache snapshot, UInt256 hash)
+        {
+            return NativeContract.Ledger.GetHeader(snapshot, hash);
+        }
+
+        public static Block GetBlock(this DataCache snapshot, UInt256 hash)
+        {
+            return NativeContract.Ledger.GetBlock(snapshot, hash);
+        }
+
+        public static Transaction GetTransaction(this DataCache snapshot, UInt256 hash)
+        {
+            return NativeContract.Ledger.GetTransaction(snapshot, hash);
+        }
+
+        public static TransactionState GetTransactionState(this DataCache snapshot, UInt256 hash)
+        {
+            return NativeContract.Ledger.GetTransactionState(snapshot, hash);
+        }
 
         public static string GetExMessage(this Exception ex)
         {
@@ -1000,5 +1277,7 @@ namespace Neo
             }
             return msg;
         }
+
+
     }
 }

@@ -5,10 +5,11 @@ using System.Text;
 using System.Threading.Tasks;
 using Neo.Ledger;
 using Neo.Network.P2P;
+using Neo.SmartContract.Native;
 
 namespace Neo.Models.Jobs
 {
-    public class SyncHeightJob:Job
+    public class SyncHeightJob : Job
     {
         public SyncHeightJob(TimeSpan timeSpan)
         {
@@ -16,11 +17,18 @@ namespace Neo.Models.Jobs
         }
         public override async Task<WsMessage> Invoke()
         {
+            uint height = this.GetCurrentHeight();
+            uint headerHeight = this.GetCurrentHeaderHeight();
             return new WsMessage()
             {
                 MsgType = WsMessageType.Push,
                 Method = "getSyncHeight",
-                Result = new HeightStateModel { SyncHeight = Blockchain.Singleton.Height, HeaderHeight = Blockchain.Singleton.HeaderHeight,ConnectedCount = LocalNode.Singleton.ConnectedCount }
+                Result = new HeightStateModel
+                {
+                    SyncHeight = height,
+                    HeaderHeight = headerHeight,
+                    ConnectedCount = this.GetDefaultLocalNode().ConnectedCount
+                }
             };
         }
     }

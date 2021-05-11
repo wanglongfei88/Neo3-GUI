@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 using Neo.Common.Utility;
@@ -16,19 +17,19 @@ namespace Neo.Models.Transactions
         public TransactionModel(Transaction tx)
         {
             TxId = tx.Hash;
-            NetworkFee = new BigDecimal(tx.NetworkFee, NativeContract.GAS.Decimals);
+            NetworkFee = new BigDecimal((BigInteger)tx.NetworkFee, NativeContract.GAS.Decimals);
             Nonce = tx.Nonce;
             Script = tx.Script;
             
             Sender = tx.Sender;
-            SystemFee = new BigDecimal(tx.SystemFee, NativeContract.GAS.Decimals);
+            SystemFee = new BigDecimal((BigInteger)tx.SystemFee, NativeContract.GAS.Decimals);
             ValidUntilBlock = tx.ValidUntilBlock;
             Version = tx.Version;
             Size = tx.Size;
             Attributes = tx.Attributes?.Select(a => new TranAttributeModel()
             {
                 Usage = a.Type,
-                //Data = a.Data,
+                Data = a.ToJson().ToString(),
             }).ToList();
             Witnesses = tx.Witnesses?.Select(w => new WitnessModel(w)
             ).ToList();
